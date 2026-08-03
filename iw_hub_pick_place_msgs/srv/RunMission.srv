@@ -1,0 +1,8 @@
+# Request: names of two waypoints from pick_place_goals.yaml.
+# The robot navigates to pick_up, raises the lift, navigates to destination,
+# then lowers the lift.
+string pick_up
+string destination
+---
+bool success
+string message

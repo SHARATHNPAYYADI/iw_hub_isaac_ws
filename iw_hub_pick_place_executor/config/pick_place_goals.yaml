@@ -1,0 +1,45 @@
+# Named waypoints for the iw_hub pick-and-place mission service.
+#
+# Frame: all x/y/yaw are in the "map" frame (same frame Nav2 goals are sent in).
+# yaw is in radians.
+#
+# The /mission service takes any two waypoint names as pick_up/destination, e.g.:
+#   ros2 service call /mission iw_hub_pick_place_msgs/srv/RunMission \
+#     "{pick_up: goal_a, destination: goal_b}"
+#
+# Sequence run per call:
+#   1. Nav2 -> <pick_up>      (drive to and under the dolly)
+#   2. lift_ramp_node -> raised   (grab/raise the dolly)
+#   3. Nav2 -> <destination>   (carry the dolly, lift stays raised)
+#   4. lift_ramp_node -> lowered  (release the dolly)
+
+frame_id: "map"
+
+lift:
+  lowered: 0.0
+  raised: 0.09
+
+waypoints:
+  goal_a:
+    description: "Dolly pick-up point"
+    x: 0.00
+    y: 0.00
+    yaw: 0.0
+
+  goal_b:
+    description: "Drop-off point"
+    x: 3.00
+    y: 7.50
+    yaw: 1.5708
+
+  goal_c:
+    description: "Example third point - add as many named waypoints as you need"
+    x: 6.00
+    y: 4.00
+    yaw: 3.1416
+
+  goal_d:
+    description: "Example fourth point"
+    x: 0.50
+    y: 4.00
+    yaw: -1.5708
