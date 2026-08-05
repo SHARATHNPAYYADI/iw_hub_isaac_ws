@@ -53,7 +53,7 @@ class MissionExecutorNode(Node):
         self.declare_parameter('nav_timeout_sec', 300.0)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('odom_topic', '/odom')
-        self.declare_parameter('retreat_distance', 0.5)
+        self.declare_parameter('retreat_distance', 1.)
         self.declare_parameter('retreat_speed', 0.15)
         self.declare_parameter('retreat_timeout_sec', 20.0)
 

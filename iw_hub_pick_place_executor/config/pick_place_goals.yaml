@@ -34,8 +34,8 @@ waypoints:
 
   goal_c:
     description: "Example third point - add as many named waypoints as you need"
-    x: 6.00
-    y: 4.00
+    x: -3.72884
+    y: 7.58385
     yaw: 3.1416
 
   goal_d:
