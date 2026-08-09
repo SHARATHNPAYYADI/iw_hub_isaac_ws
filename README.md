@@ -159,18 +159,18 @@ turning speed above, to stop the dolly sliding during transport.
 
 ### 1. Autonomous navigation to a goal
 
-[assets/simple_goal_rviz2.mp4](assets/simple_goal_rviz2.mp4)
+[Watch on Google Drive](https://drive.google.com/file/d/1J6oHt3szAmv0kD4YLDSMHuu1d0dHWWle/view?usp=drive_link)
 
 ### 2. Smooth lift control
 
-[assets/lift_up.mp4](assets/lift_up.mp4)
+[Watch on Google Drive](https://drive.google.com/file/d/1mAl8dxoUWBSikGWay__MOyr2cr-sAjA6/view?usp=drive_link)
 
 ### 3. Full pick-and-place mission (dashboard-triggered)
 
-[assets/mission.mp4](assets/mission.mp4)
+[Watch on Google Drive](https://drive.google.com/file/d/1Dc5gT9flHTw4ZL6-HT-qEhdFcCTfzhFk/view?usp=drive_link)
 
 ---
 
 ## License
 
-*(add your license here, e.g. MIT/Apache-2.0)*
+MIT — see [LICENCE](LICENCE).
