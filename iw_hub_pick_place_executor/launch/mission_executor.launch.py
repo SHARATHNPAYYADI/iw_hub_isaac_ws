@@ -16,14 +16,14 @@ def generate_launch_description():
         DeclareLaunchArgument('lift_cmd_topic', default_value='/lift_position_cmd'),
         DeclareLaunchArgument('joint_states_topic', default_value='/joint_states'),
         DeclareLaunchArgument('lift_joint_name', default_value='lift_joint'),
-        DeclareLaunchArgument('lift_timeout_sec', default_value='100.0'),
+        DeclareLaunchArgument('lift_timeout_sec', default_value='120.0'),
         DeclareLaunchArgument('lift_tolerance', default_value='0.002'),
         DeclareLaunchArgument('nav_action_name', default_value='navigate_to_pose'),
         DeclareLaunchArgument('nav_timeout_sec', default_value='300.0'),
         DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel'),
         DeclareLaunchArgument('odom_topic', default_value='/chassis/odom'),
-        DeclareLaunchArgument('retreat_distance', default_value='1.0'),
-        DeclareLaunchArgument('retreat_speed', default_value='0.3'),
+        DeclareLaunchArgument('retreat_distance', default_value='1.5'),
+        DeclareLaunchArgument('retreat_speed', default_value='0.8'),
         DeclareLaunchArgument('retreat_timeout_sec', default_value='60.0'),
 
         Node(

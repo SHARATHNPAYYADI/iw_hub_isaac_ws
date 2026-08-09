@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Publishes velocity-limited JointState commands to smoothly ramp the iw_hub
-lift joint to a target position, instead of jumping there in one message.
+Publishes acceleration-limited JointState commands to smoothly ramp the
+iw_hub lift joint to a target position.
+
+Uses a trapezoidal velocity profile - the commanded velocity itself ramps up
+and back down at a bounded acceleration, rather than stepping instantly from
+0 to max_velocity and snapping back to 0 at the goal. A velocity step is an
+infinite-acceleration jolt at both ends of the move; on a lift carrying an
+unsecured load (e.g. a dolly resting on the platform via friction only),
+that jolt is enough to shift the load even though the *position* trajectory
+looks smooth.
 
 Send a target with:
   ros2 topic pub --once /lift_position_cmd std_msgs/msg/Float64 "data: 0.09"
@@ -27,6 +35,10 @@ class LiftRampNode(Node):
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('lift_cmd_topic', '/lift_position_cmd')
         self.declare_parameter('max_velocity', 0.01)       # m/s, tune to your lift stroke/limits
+        # m/s^2 - how quickly the commanded velocity itself ramps up/down.
+        # Lower = gentler start/stop, less likely to jolt an unsecured load,
+        # but the lift takes longer to reach max_velocity.
+        self.declare_parameter('max_acceleration', 0.01)
         self.declare_parameter('publish_rate', 50.0)        # Hz
         self.declare_parameter('effort', 10.0)
         self.declare_parameter('goal_tolerance', 0.0005)    # m
@@ -36,6 +48,7 @@ class LiftRampNode(Node):
 
         self.joint_name = self.get_parameter('joint_name').value
         self.max_velocity = self.get_parameter('max_velocity').value
+        self.max_acceleration = self.get_parameter('max_acceleration').value
         self.publish_rate = self.get_parameter('publish_rate').value
         self.effort = self.get_parameter('effort').value
         self.goal_tolerance = self.get_parameter('goal_tolerance').value
@@ -54,14 +67,14 @@ class LiftRampNode(Node):
         self.create_subscription(Float64, lift_cmd_topic, self._target_cb, 10)
 
         self.current_position = 0.0
+        self.current_velocity = 0.0
         self.have_feedback = False
         self.target_position = None
         self.timer = None
 
-        step = self.max_velocity / self.publish_rate
         self.get_logger().info(
             f"lift_ramp_node ready: joint='{self.joint_name}' max_vel={self.max_velocity} m/s "
-            f"rate={self.publish_rate} Hz (step={step:.5f} m/tick), "
+            f"max_accel={self.max_acceleration} m/s^2 rate={self.publish_rate} Hz, "
             f"limits=[{self.lower_limit}, {self.upper_limit}]")
 
         startup_target = self.get_parameter('target_position').value
@@ -83,7 +96,8 @@ class LiftRampNode(Node):
         self.target_position = target
         self.get_logger().info(
             f"Ramping '{self.joint_name}' from {self.current_position:.4f} to "
-            f"{self.target_position:.4f} at {self.max_velocity} m/s"
+            f"{self.target_position:.4f} (max_vel={self.max_velocity} m/s, "
+            f"max_accel={self.max_acceleration} m/s^2)"
             + ("" if self.have_feedback else " (no /joint_states feedback yet, using internal estimate)"))
 
         if self.timer is None:
@@ -94,11 +108,14 @@ class LiftRampNode(Node):
         if self.target_position is None:
             return
 
+        dt = 1.0 / self.publish_rate
         delta = self.target_position - self.current_position
-        max_step = self.max_velocity / self.publish_rate
+        direction = 1.0 if delta > 0 else -1.0
+        distance_remaining = abs(delta)
 
-        if abs(delta) <= self.goal_tolerance:
+        if distance_remaining <= self.goal_tolerance and abs(self.current_velocity) < 1e-4:
             self.current_position = self.target_position
+            self.current_velocity = 0.0
             self._publish(velocity=0.0)
             self.get_logger().info(f"Reached target {self.target_position:.4f}")
             self.target_position = None
@@ -106,10 +123,31 @@ class LiftRampNode(Node):
             self.timer = None
             return
 
-        step = max(-max_step, min(max_step, delta))
+        # Trapezoidal profile: figure out the fastest speed we could be going
+        # right now and still decelerate to a stop exactly at the target
+        # (v^2 = 2 * a * d, solved for v), then clamp to max_velocity. This
+        # gives the ramp-down automatically without a separate deceleration
+        # phase to track.
+        max_speed_to_stop_in_time = (2.0 * self.max_acceleration * distance_remaining) ** 0.5
+        desired_speed = min(self.max_velocity, max_speed_to_stop_in_time)
+        desired_velocity = direction * desired_speed
+
+        # Ramp actual commanded velocity toward desired_velocity at a bounded
+        # acceleration - this is what actually eliminates the jolt, rather
+        # than jumping straight to desired_velocity each tick.
+        max_delta_v = self.max_acceleration * dt
+        velocity_error = desired_velocity - self.current_velocity
+        velocity_step = max(-max_delta_v, min(max_delta_v, velocity_error))
+        self.current_velocity += velocity_step
+
+        # Don't overshoot the target in one tick.
+        step = self.current_velocity * dt
+        if abs(step) > distance_remaining:
+            step = direction * distance_remaining
+            self.current_velocity = 0.0
+
         self.current_position += step
-        commanded_velocity = self.max_velocity if step > 0 else -self.max_velocity
-        self._publish(velocity=commanded_velocity)
+        self._publish(velocity=self.current_velocity)
 
     def _publish(self, velocity: float):
         msg = JointState()
