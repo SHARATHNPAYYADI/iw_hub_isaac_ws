@@ -58,9 +58,7 @@ service call (with a browser dashboard on top).
 
 Build order matters — the interfaces package first:
 ```bash
-colcon build --packages-select iw_hub_pick_place_msgs
-source install/setup.bash
-colcon build --packages-select iw_hub_navigation iw_hub_lift_control iw_hub_pick_place_executor
+colcon build
 source install/setup.bash
 ```
 
@@ -157,77 +155,19 @@ turning speed above, to stop the dolly sliding during transport.
 
 ---
 
-## Debugging notes (things that weren't obvious at the time)
-
-- **Occupancy Map's Z-slice range has to match the lidar's mounted height**,
-  not just "capture everything." The tool projects geometry within a
-  configurable Z range regardless of where the lidar actually sits — if that
-  range doesn't bracket the lidar's real height, the exported map won't
-  match what AMCL sees from the live 2D scan, causing localization drift
-  even though the map looks fine visually.
-- **Nav2 plugin lookup strings are inconsistent across packages** in this
-  Humble build: `nav2_navfn_planner` and `nav2_behaviors` need the
-  `package/ClassName` slash format; `nav2_controller`, `dwb_core`,
-  `nav2_costmap_2d`, `nav2_waypoint_follower` need `namespace::ClassName`.
-  Both are correct as checked in — don't "fix" them to be consistent with
-  each other.
-- **AMCL only supports one scan topic** (`scan_topic` param) — it can't fuse
-  front+rear lidar the way the costmap obstacle layers can via
-  `observation_sources`. Currently localizing off the front lidar alone.
-- **`bt_navigator`'s default BT XML params need full paths**, not bare
-  filenames — `nav2_bringup`'s own launch usually injects this, but a custom
-  bringup launch has to set it explicitly.
-- **The mission executor blocks on Nav2 action results inside a service
-  callback** — this requires a `MultiThreadedExecutor` +
-  `ReentrantCallbackGroup`; a default single-threaded executor deadlocks
-  here since the callback waits on another callback to fire.
-- **The executor originally didn't check `send_lift_command`'s return
-  value** — it would drive to the next goal even if the lift never
-  confirmed reaching target, i.e. moving with the dolly only partially
-  lifted. Fixed to abort the mission if the lift doesn't confirm in time.
-
-## Not done yet
-
-- Real map + waypoint coordinates are project-specific — replace the
-  placeholder values in `pick_place_goals.yaml` before reusing this.
-- No rigid attachment between the lift and dolly (friction-only) — a
-  dynamically created/destroyed physics fixed joint at pick/place time would
-  be a more robust fix than turn-speed limits and friction tuning alone.
-- No obstacle-awareness of the dolly itself during transport or the retreat
-  move.
-
----
-
 ## Demo videos
 
-<!--
-  Embed videos here once recorded. GitHub READMEs don't reliably autoplay
-  local video files, so the common patterns are:
+### 1. Autonomous navigation to a goal
 
-  1. GIF preview + link to full video:
-     ![demo](docs/demo.gif)
-     [Watch the full demo on YouTube](https://youtube.com/...)
+[assets/simple_goal_rviz2.mp4](assets/simple_goal_rviz2.mp4)
 
-  2. Thumbnail image linking out to YouTube:
-     [![Watch the demo](docs/thumbnail.png)](https://youtube.com/watch?v=...)
+### 2. Smooth lift control
 
-  3. Upload the .mp4 directly into a GitHub issue/PR comment (drag-and-drop),
-     copy the generated githubusercontent.com URL it gives you, then use
-     that URL directly in the README - GitHub will render it as an inline
-     playable video.
--->
+[assets/lift_up.mp4](assets/lift_up.mp4)
 
-### 1. Map generation (Occupancy Map) + localization
-*(video link here)*
+### 3. Full pick-and-place mission (dashboard-triggered)
 
-### 2. Autonomous navigation to a goal
-*(video link here)*
-
-### 3. Smooth lift control
-*(video link here)*
-
-### 4. Full pick-and-place mission (dashboard-triggered)
-*(video link here)*
+[assets/mission.mp4](assets/mission.mp4)
 
 ---
 
