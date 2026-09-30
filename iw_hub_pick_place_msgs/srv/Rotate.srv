@@ -1,0 +1,7 @@
+# Rotates the robot in place (direct /cmd_vel + odometry, bypassing Nav2).
+# angle is in radians: positive = counter-clockwise (left), negative = clockwise (right).
+float64 angle
+---
+bool success
+string message
+float64 rotated

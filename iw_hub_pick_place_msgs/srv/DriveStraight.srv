@@ -1,0 +1,8 @@
+# Drives the robot in a dead-straight line (direct /cmd_vel + odometry, bypassing
+# Nav2). There is NO obstacle avoidance - the robot will not stop for anything.
+# distance is in meters: positive = forward, negative = backward.
+float64 distance
+---
+bool success
+string message
+float64 traveled

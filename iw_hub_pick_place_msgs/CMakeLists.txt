@@ -6,6 +6,10 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RunMission.srv"
+  "srv/AddWaypoint.srv"
+  "srv/ListWaypoints.srv"
+  "srv/DriveStraight.srv"
+  "srv/Rotate.srv"
 )
 
 ament_package()

@@ -9,12 +9,17 @@ On each call: navigates to `pick_up`, raises the lift, navigates to
 `destination`, lowers the lift. Runs once per call - no auto-looping.
 Calls are serialized: a second call while one is in progress is rejected.
 
+Also exposes /drive_straight and /rotate for simple manual moves (used by the
+chat assistant). They share the same lock, so they can't run during a mission.
+
 Requires:
   - Nav2 stack up and localized (see iw_hub_navigation)
   - lift_ramp_node running (see iw_hub_lift_control), listening on /lift_position_cmd
 """
 
 import math
+import os
+import tempfile
 import threading
 import time
 
@@ -31,11 +36,21 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64
 
-from iw_hub_pick_place_msgs.srv import RunMission
+from iw_hub_pick_place_msgs.srv import (
+    RunMission, AddWaypoint, ListWaypoints, DriveStraight, Rotate,
+)
 
 
 def yaw_to_quaternion(yaw: float):
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def quaternion_to_yaw(q) -> float:
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+
+def normalize_angle(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
 
 
 class MissionExecutorNode(Node):
@@ -56,19 +71,27 @@ class MissionExecutorNode(Node):
         self.declare_parameter('retreat_distance', 1.5)
         self.declare_parameter('retreat_speed', 0.5)
         self.declare_parameter('retreat_timeout_sec', 60.0)
+        self.declare_parameter('manual_linear_speed', 0.5)
+        self.declare_parameter('manual_angular_speed', 0.3)
+        self.declare_parameter('manual_max_distance', 10.0)
+        self.declare_parameter('manual_timeout_sec', 60.0)
 
-        goals_file = self.get_parameter('goals_file').value
-        if not goals_file:
+        self.goals_file = self.get_parameter('goals_file').value
+        if not self.goals_file:
             raise RuntimeError(
                 "Parameter 'goals_file' is required - pass the full path to "
                 "pick_place_goals.yaml")
 
-        with open(goals_file, 'r') as f:
+        with open(self.goals_file, 'r') as f:
             self.mission_config = yaml.safe_load(f)
 
         self.frame_id = self.mission_config.get('frame_id', 'map')
         self.waypoints = self.mission_config['waypoints']
         self.lift_levels = self.mission_config['lift']
+
+        # Guards self.waypoints / self.mission_config / the goals YAML file
+        # against concurrent add_waypoint / list_waypoints calls.
+        self.waypoints_lock = threading.Lock()
 
         self.lift_topic = self.get_parameter('lift_cmd_topic').value
         self.lift_joint_name = self.get_parameter('lift_joint_name').value
@@ -78,6 +101,10 @@ class MissionExecutorNode(Node):
         self.retreat_distance = self.get_parameter('retreat_distance').value
         self.retreat_speed = self.get_parameter('retreat_speed').value
         self.retreat_timeout_sec = self.get_parameter('retreat_timeout_sec').value
+        self.manual_linear_speed = self.get_parameter('manual_linear_speed').value
+        self.manual_angular_speed = self.get_parameter('manual_angular_speed').value
+        self.manual_max_distance = self.get_parameter('manual_max_distance').value
+        self.manual_timeout_sec = self.get_parameter('manual_timeout_sec').value
 
         cb_group = ReentrantCallbackGroup()
 
@@ -94,6 +121,7 @@ class MissionExecutorNode(Node):
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.current_odom_xy = None
+        self.current_odom_yaw = None
         self.create_subscription(
             Odometry, self.get_parameter('odom_topic').value,
             self._odom_cb, 10, callback_group=cb_group)
@@ -103,10 +131,19 @@ class MissionExecutorNode(Node):
 
         self.srv = self.create_service(
             RunMission, 'mission', self._handle_mission, callback_group=cb_group)
+        self.add_waypoint_srv = self.create_service(
+            AddWaypoint, 'add_waypoint', self._handle_add_waypoint, callback_group=cb_group)
+        self.list_waypoints_srv = self.create_service(
+            ListWaypoints, 'list_waypoints', self._handle_list_waypoints, callback_group=cb_group)
+        self.drive_straight_srv = self.create_service(
+            DriveStraight, 'drive_straight', self._handle_drive_straight, callback_group=cb_group)
+        self.rotate_srv = self.create_service(
+            Rotate, 'rotate', self._handle_rotate, callback_group=cb_group)
 
         self.get_logger().info(
             f"mission_executor_node ready. Waypoints available: {list(self.waypoints.keys())}. "
-            "Call the /mission service to start a pick-and-place run.")
+            "Call /mission to run a pick-and-place, /add_waypoint to save a new goal point, "
+            "/list_waypoints to read the current list, /drive_straight and /rotate for manual moves.")
 
     def _joint_states_cb(self, msg: JointState):
         if self.lift_joint_name in msg.name:
@@ -116,6 +153,7 @@ class MissionExecutorNode(Node):
 
     def _odom_cb(self, msg: Odometry):
         self.current_odom_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        self.current_odom_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
 
     # -- Service callback ---------------------------------------------------
 
@@ -169,7 +207,9 @@ class MissionExecutorNode(Node):
                     "'lowered' before timeout - check the lift manually")
                 return response
 
-            if not self.drive_straight(self.retreat_distance, self.retreat_speed):
+            traveled = self.drive_straight(
+                self.retreat_distance, self.retreat_speed, self.retreat_timeout_sec)
+            if traveled < self.retreat_distance * 0.9:  # allow a little slack
                 self.get_logger().warn(
                     "Retreat move did not complete fully - the dolly may still "
                     "be close to the robot, drive carefully on the next goal")
@@ -181,32 +221,152 @@ class MissionExecutorNode(Node):
         finally:
             self._mission_lock.release()
 
+    # -- Manual moves (called from the chat assistant) ---------------------
+
+    def _handle_drive_straight(self, request, response):
+        distance = float(request.distance)
+        if not math.isfinite(distance) or abs(distance) > self.manual_max_distance:
+            response.success = False
+            response.message = (
+                f"distance must be between -{self.manual_max_distance} and "
+                f"{self.manual_max_distance} m, got {distance}")
+            self.get_logger().error(response.message)
+            return response
+
+        if not self._mission_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "A mission or move is already running - try again once it finishes"
+            self.get_logger().warn(response.message)
+            return response
+
+        try:
+            traveled = self.drive_straight(
+                distance, self.manual_linear_speed, self.manual_timeout_sec)
+        finally:
+            self._mission_lock.release()
+
+        direction = 'forward' if distance >= 0 else 'backward'
+        response.traveled = traveled
+        response.success = traveled >= abs(distance)
+        response.message = (
+            f"Drove {direction} {traveled:.2f} m of {abs(distance):.2f} m"
+            + ("" if response.success else " - stopped early (timeout or no odometry)"))
+        return response
+
+    def _handle_rotate(self, request, response):
+        angle = float(request.angle)
+        if not math.isfinite(angle) or abs(angle) > 2.0 * math.pi:
+            response.success = False
+            response.message = f"angle must be between -2*pi and 2*pi rad, got {angle}"
+            self.get_logger().error(response.message)
+            return response
+
+        if not self._mission_lock.acquire(blocking=False):
+            response.success = False
+            response.message = "A mission or move is already running - try again once it finishes"
+            self.get_logger().warn(response.message)
+            return response
+
+        try:
+            rotated = self.rotate_in_place(
+                angle, self.manual_angular_speed, self.manual_timeout_sec)
+        finally:
+            self._mission_lock.release()
+
+        direction = 'left' if angle >= 0 else 'right'
+        response.rotated = rotated
+        response.success = abs(rotated) >= abs(angle)
+        response.message = (
+            f"Turned {direction} {math.degrees(abs(rotated)):.1f} deg of "
+            f"{math.degrees(abs(angle)):.1f} deg"
+            + ("" if response.success else " - stopped early (timeout or no odometry)"))
+        return response
+
+    # -- Waypoint management (called from the frontend's map editor) -------
+
+    def _handle_add_waypoint(self, request, response):
+        name = request.name.strip()
+        if not name:
+            response.success = False
+            response.message = "Waypoint name must not be empty"
+            self.get_logger().error(response.message)
+            return response
+
+        with self.waypoints_lock:
+            is_update = name in self.waypoints
+            self.waypoints[name] = {
+                'x': float(request.x),
+                'y': float(request.y),
+                'yaw': float(request.yaw),
+                'description': request.description,
+            }
+            self.mission_config['waypoints'] = self.waypoints
+            try:
+                self._write_goals_file()
+            except OSError as e:
+                response.success = False
+                response.message = f"Failed to write '{self.goals_file}': {e}"
+                self.get_logger().error(response.message)
+                return response
+
+        verb = 'Updated' if is_update else 'Added'
+        response.success = True
+        response.message = f"{verb} waypoint '{name}' at ({request.x:.2f}, {request.y:.2f})"
+        self.get_logger().info(response.message)
+        return response
+
+    def _handle_list_waypoints(self, request, response):
+        with self.waypoints_lock:
+            items = list(self.waypoints.items())
+
+        response.names = [name for name, _ in items]
+        response.x = [float(wp['x']) for _, wp in items]
+        response.y = [float(wp['y']) for _, wp in items]
+        response.yaw = [float(wp['yaw']) for _, wp in items]
+        response.description = [wp.get('description', '') for _, wp in items]
+        return response
+
+    def _write_goals_file(self):
+        """Atomically rewrites the goals YAML so a crash mid-write can't corrupt it."""
+        directory = os.path.dirname(self.goals_file) or '.'
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix='.yaml.tmp')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                yaml.safe_dump(self.mission_config, f, default_flow_style=False, sort_keys=False)
+            os.replace(tmp_path, self.goals_file)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+
     # -- Straight-line retreat (clears the dropped dolly, which Nav2 can't see) --
 
-    def drive_straight(self, distance: float, speed: float) -> bool:
-        """Drives forward in a dead-straight line for `distance` meters,
-        bypassing Nav2/the planner entirely so no turning can clip whatever
-        was just dropped off (the dolly isn't sensed as a costmap obstacle)."""
+    def drive_straight(self, distance: float, speed: float, timeout_sec: float) -> float:
+        """Drives in a dead-straight line for `distance` meters (negative =
+        backward), bypassing Nav2/the planner entirely so no turning can clip
+        whatever was just dropped off (the dolly isn't sensed as a costmap
+        obstacle). Returns the distance actually traveled."""
         if self.current_odom_xy is None:
             self.get_logger().warn(
-                "No /odom data yet - skipping retreat move, drive manually if needed")
-            return False
+                "No /odom data yet - skipping straight move, drive manually if needed")
+            return 0.0
 
         start_x, start_y = self.current_odom_xy
-        self.get_logger().info(f"Retreating straight {distance} m at {speed} m/s")
+        target = abs(distance)
+        self.get_logger().info(f"Driving straight {distance} m at {speed} m/s")
 
         twist = Twist()
-        twist.linear.x = speed
+        twist.linear.x = math.copysign(speed, distance)
 
         start_time = time.time()
         traveled = 0.0
         rate_hz = 20.0
 
-        while traveled < distance:
-            if time.time() - start_time > self.retreat_timeout_sec:
+        while traveled < target:
+            if time.time() - start_time > timeout_sec:
                 self.get_logger().warn(
-                    f"Retreat move timed out after {self.retreat_timeout_sec}s "
-                    f"(traveled {traveled:.2f}/{distance} m) - stopping")
+                    f"Straight move timed out after {timeout_sec}s "
+                    f"(traveled {traveled:.2f}/{target} m) - stopping")
                 break
             self.cmd_vel_pub.publish(twist)
             time.sleep(1.0 / rate_hz)
@@ -220,8 +380,47 @@ class MissionExecutorNode(Node):
         time.sleep(0.05)
         self.cmd_vel_pub.publish(stop)
 
-        self.get_logger().info(f"Retreat complete, traveled {traveled:.2f} m")
-        return traveled >= distance * 0.9  # allow a little slack
+        self.get_logger().info(f"Straight move complete, traveled {traveled:.2f} m")
+        return traveled
+
+    def rotate_in_place(self, angle: float, speed: float, timeout_sec: float) -> float:
+        """Turns in place by `angle` radians (positive = counter-clockwise),
+        tracking the heading from odometry. Returns the signed angle actually
+        turned."""
+        if self.current_odom_yaw is None:
+            self.get_logger().warn("No /odom data yet - skipping rotation")
+            return 0.0
+
+        self.get_logger().info(f"Rotating {math.degrees(angle):.1f} deg at {speed} rad/s")
+
+        twist = Twist()
+        twist.angular.z = math.copysign(speed, angle)
+
+        start_time = time.time()
+        last_yaw = self.current_odom_yaw
+        rotated = 0.0
+        rate_hz = 20.0
+
+        # Accumulate small per-step heading changes so turns past +/-pi work.
+        while abs(rotated) < abs(angle):
+            if time.time() - start_time > timeout_sec:
+                self.get_logger().warn(
+                    f"Rotation timed out after {timeout_sec}s "
+                    f"(turned {math.degrees(rotated):.1f}/{math.degrees(angle):.1f} deg) - stopping")
+                break
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(1.0 / rate_hz)
+            yaw = self.current_odom_yaw
+            rotated += normalize_angle(yaw - last_yaw)
+            last_yaw = yaw
+
+        stop = Twist()
+        self.cmd_vel_pub.publish(stop)
+        time.sleep(0.05)
+        self.cmd_vel_pub.publish(stop)
+
+        self.get_logger().info(f"Rotation complete, turned {math.degrees(rotated):.1f} deg")
+        return rotated
 
     # -- Nav2 -----------------------------------------------------------
 

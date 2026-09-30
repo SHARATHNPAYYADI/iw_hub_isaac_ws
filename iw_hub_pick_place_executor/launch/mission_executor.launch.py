@@ -25,6 +25,10 @@ def generate_launch_description():
         DeclareLaunchArgument('retreat_distance', default_value='1.5'),
         DeclareLaunchArgument('retreat_speed', default_value='0.8'),
         DeclareLaunchArgument('retreat_timeout_sec', default_value='60.0'),
+        DeclareLaunchArgument('manual_linear_speed', default_value='0.5'),
+        DeclareLaunchArgument('manual_angular_speed', default_value='0.3'),
+        DeclareLaunchArgument('manual_max_distance', default_value='10.0'),
+        DeclareLaunchArgument('manual_timeout_sec', default_value='60.0'),
 
         Node(
             package='iw_hub_pick_place_executor',
@@ -45,6 +49,10 @@ def generate_launch_description():
                 'retreat_distance': LaunchConfiguration('retreat_distance'),
                 'retreat_speed': LaunchConfiguration('retreat_speed'),
                 'retreat_timeout_sec': LaunchConfiguration('retreat_timeout_sec'),
+                'manual_linear_speed': LaunchConfiguration('manual_linear_speed'),
+                'manual_angular_speed': LaunchConfiguration('manual_angular_speed'),
+                'manual_max_distance': LaunchConfiguration('manual_max_distance'),
+                'manual_timeout_sec': LaunchConfiguration('manual_timeout_sec'),
             }],
         ),
     ])

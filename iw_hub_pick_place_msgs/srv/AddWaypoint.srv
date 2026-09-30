@@ -1,0 +1,10 @@
+# Adds a new named waypoint (or overwrites an existing one) in pick_place_goals.yaml.
+# x/y/yaw are in the map frame, same convention as the existing waypoints.
+string name
+float64 x
+float64 y
+float64 yaw
+string description
+---
+bool success
+string message

@@ -21,6 +21,8 @@ service call (with a browser dashboard on top).
    it, and pull clear — all automatically.
 5. **Exposes a browser dashboard** to trigger missions and watch live
    telemetry (lift state, robot pose) without touching the CLI.
+6. **Takes plain-English commands** ("go forward 5 m", "turn left 90") from a
+   Claude-powered chat assistant built into the dashboard.
 
 ## Architecture
 
@@ -55,6 +57,7 @@ service call (with a browser dashboard on top).
 | `iw_hub_pick_place_msgs` | ament_cmake | Custom `RunMission` service definition |
 | `iw_hub_pick_place_executor` | ament_python | On-demand pick-and-place mission service |
 | `frontend/iw_hub_console.html` | standalone | Browser dashboard (rosbridge + roslibjs) |
+| `iw_hub_chat` | standalone (not a ROS package) | Chat assistant backend: Claude Code + robot MCP tools |
 
 Build order matters — the interfaces package first:
 ```bash
@@ -144,6 +147,48 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 Open the HTML file locally in any browser and point it at
 `ws://<robot-host>:9090`. A Simulated mode is built in for testing the UI
 without a live stack.
+
+## 5. Chat assistant (`iw_hub_chat`)
+
+The dashboard's **Assistant** tab lets you command the robot in plain English:
+
+```
+browser ──HTTP──▶ iw_hub_chat/server.py ──▶ `claude -p` (your Claude Pro login)
+                                               │
+                                        robot_mcp.py (MCP tools) ──ROS 2 services──▶ mission_executor_node
+```
+
+| Tool | ROS 2 call |
+|---|---|
+| `move_robot(forward/backward, meters)` | `/drive_straight` (`DriveStraight.srv`) |
+| `move_robot(left/right, degrees)` | `/rotate` (`Rotate.srv`) |
+| `get_robot_state()` | TF `map` → `base_link` |
+| `list_waypoints()` / `run_mission(pick_up, destination)` | `/list_waypoints` / `/mission` |
+
+`/drive_straight` and `/rotate` reuse the retreat move's approach: direct
+`/cmd_vel`, with distance and heading tracked from odometry. They bypass Nav2, so
+**there is no obstacle avoidance**. They share the mission lock, so they are
+rejected while a mission is running. Speeds and the 10 m cap are the
+`manual_*` parameters in `mission_executor.launch.py`.
+
+One-time setup (needs the Claude Code CLI logged in with your Pro account):
+```bash
+cd iw_hub_chat
+python3 -m venv --system-site-packages .venv   # system site-packages give it numpy etc. for rclpy
+.venv/bin/pip install --ignore-installed -r requirements.txt
+```
+
+Run it alongside the stack, from a shell with ROS 2 and the workspace sourced:
+```bash
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch iw_hub_navigation iw_hub_bringup.launch.py        # terminal 1
+cd iw_hub_chat && .venv/bin/uvicorn server:app --port 8000    # terminal 2
+```
+Open http://localhost:8000, click **Connect** for live telemetry, then open
+**Assistant**. The chat server also serves the dashboard, so it needs no CORS
+setup. The assistant does not work when the HTML file is opened directly. Each
+message counts against your Claude Pro usage; set `ROBOT_CHAT_MODEL=opus` to use
+Opus instead of Sonnet.
 
 ## Physics tuning: friction
 

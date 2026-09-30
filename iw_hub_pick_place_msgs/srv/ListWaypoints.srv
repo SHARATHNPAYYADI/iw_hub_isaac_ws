@@ -1,0 +1,7 @@
+# Returns all currently known waypoints as parallel arrays.
+---
+string[] names
+float64[] x
+float64[] y
+float64[] yaw
+string[] description
